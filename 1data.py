@@ -4,7 +4,8 @@ import torch.optim as optim
 import json
 import random
 import numpy as np  # Import NumPy for efficient indexing
-
+from tqdm import tqdm
+import gzip 
 # Define the MLP model
 class MLPClassifier(nn.Module):
     def __init__(self):
@@ -51,7 +52,8 @@ def train_and_get_weights(boundary):
 
 # Generate 1000 random boundaries and save the results
 results = []
-for _ in range(1000):
+boundaries = 10
+for _ in tqdm(range(boundaries), desc="Processing Boundaries"):
     boundary = random.uniform(-20, 20)
     boundary, X_train, y_train, hidden_weights, output_weights = train_and_get_weights(boundary)
 
@@ -75,8 +77,10 @@ for _ in range(1000):
         'output_weights': output_weights.tolist()
     })
 
-# Save to JSON file
-with open('1data.json', 'w') as f:
+
+with gzip.open('1data_optimized.json.gz', 'wt', encoding='utf-8') as f:
     json.dump(results, f, indent=4)
+
+print("Results saved to 1data_optimized.json.gz")
 
 print("Results saved to 1data.json")

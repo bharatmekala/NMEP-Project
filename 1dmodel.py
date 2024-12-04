@@ -1,117 +1,186 @@
 import torch
 import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader, random_split
 import json
+import gzip
+from tqdm import tqdm
+import os
 
-# Define the MLP model
-class MLPClassifier(nn.Module):
-    def __init__(self):
-        super(MLPClassifier, self).__init__()
-        self.hidden = nn.Linear(1, 10)
-        self.output = nn.Linear(10, 1)
-        self.sigmoid = nn.Sigmoid()
-    
-    def forward(self, x):
-        x = torch.relu(self.hidden(x))
-        x = self.sigmoid(self.output(x))
-        return x
-
-# Define the encoder model
+# Define the Encoder and Decoder classes
 class Encoder(nn.Module):
-    def __init__(self, task_vector_size=50):
+    def __init__(self):
         super(Encoder, self).__init__()
-        self.lstm = nn.LSTM(input_size=2, hidden_size=128, batch_first=True)
-        self.fc = nn.Linear(128, task_vector_size)
+        self.fc1 = nn.Linear(2, 64)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(64, 32)
     
     def forward(self, x):
-        _, (hidden, _) = self.lstm(x)
-        task_vector = self.fc(hidden[-1])
-        return task_vector
+        # x: [batch_size, num_points, 2]
+        out = self.relu(self.fc1(x))  # [batch_size, num_points, 64]
+        out = self.relu(self.fc2(out))  # [batch_size, num_points, 32]
+        # Aggregate over num_points, e.g., by mean
+        out = out.mean(dim=1)  # [batch_size, 32]
+        return out
 
-# Define the decoder model
 class Decoder(nn.Module):
-    def __init__(self, task_vector_size=50, weight_matrix_size=20):
+    def __init__(self, weight_matrix_size):
         super(Decoder, self).__init__()
-        self.decoder = nn.Sequential(
-            nn.Linear(task_vector_size, 128),
-            nn.ReLU(),
-            nn.Linear(128, weight_matrix_size)
-        )
+        self.fc1 = nn.Linear(32, 64)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(64, weight_matrix_size)
     
-    def forward(self, task_vector):
-        weights = self.decoder(task_vector)
-        return weights
+    def forward(self, x):
+        # x: [batch_size, 32]
+        out = self.relu(self.fc1(x))  # [batch_size, 64]
+        out = self.fc2(out)  # [batch_size, weight_matrix_size]
+        return out
 
-# Load the JSON data
-with open('1data.json', 'r') as f:
-    data = json.load(f)
-
-# Prepare data for training
-X_data = []
-y_weights = []
-
-for item in data:
-    X_train = torch.tensor(item['X_train'], dtype=torch.float32).view(-1, 1)
-    y_train = torch.tensor(item['y_train'], dtype=torch.float32).view(-1, 1)
-    combined = torch.cat((X_train, y_train), dim=1)  # Combine data and labels
-    X_data.append(combined)
-    # Flatten and concatenate hidden and output weights
-    hidden_weights = torch.tensor(item['hidden_weights'], dtype=torch.float32).view(-1)
-    output_weights = torch.tensor(item['output_weights'], dtype=torch.float32).view(-1)
-    weights = torch.cat((hidden_weights, output_weights), dim=0)
-    y_weights.append(weights)
-
-X_data = torch.stack(X_data)  # Shape: [batch_size, num_points, 2]
-y_weights = torch.stack(y_weights)  # Shape: [batch_size, weight_matrix_size]
-
-# Initialize models
-encoder = Encoder()
-decoder = Decoder(weight_matrix_size=y_weights.size(1))
-
-# Define loss function and optimizer
-criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(list(encoder.parameters()) + list(decoder.parameters()), lr=0.001)
-
-# Train the model
-num_epochs = 100
-for epoch in range(num_epochs):
-    optimizer.zero_grad()
-    task_vectors = encoder(X_data)  # No need to flatten
-    output_weights = decoder(task_vectors)
-    loss = criterion(output_weights, y_weights)
-    loss.backward()
-    optimizer.step()
-    if (epoch + 1) % 10 == 0:
-        print(f"Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item():.4f}")
-
-# Example usage
-test_index = 0  # Index of the test sample
-X_train = torch.tensor(data[test_index]['X_train'], dtype=torch.float32).view(-1, 1)
-y_train = torch.tensor(data[test_index]['y_train'], dtype=torch.float32).view(-1, 1)
-test_combined = torch.cat((X_train, y_train), dim=1).unsqueeze(0)  # Add batch dimension
-
-with torch.no_grad():
-    task_vector = encoder(test_combined)
-    predicted_weights = decoder(task_vector).squeeze(0)
+# Custom Dataset Class
+class CustomDataset(Dataset):
+    def __init__(self, json_file, compressed=False):
+        """
+        Args:
+            json_file (str): Path to the JSON file containing the data.
+            compressed (bool): If True, the JSON file is gzip-compressed.
+        """
+        if compressed:
+            with gzip.open(json_file, 'rt', encoding='utf-8') as f:
+                self.data = json.load(f)
+        else:
+            with open(json_file, 'r') as f:
+                self.data = json.load(f)
     
-    # Split predicted weights into hidden and output weights
-    hidden_weights_size = 10 * 1  # hidden layer weights: [10, 1]
-    output_weights_size = 1 * 10  # output layer weights: [1, 10]
+    def __len__(self):
+        return len(self.data)
     
-    hidden_weights_flat = predicted_weights[:hidden_weights_size]
-    output_weights_flat = predicted_weights[hidden_weights_size: hidden_weights_size + output_weights_size]
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        
+        # Process X_train and y_train
+        X_train = torch.tensor(item['X_train'], dtype=torch.float32).view(-1, 1)  # [num_points, 1]
+        y_train = torch.tensor(item['y_train'], dtype=torch.float32).view(-1, 1)  # [num_points, 1]
+        combined = torch.cat((X_train, y_train), dim=1)  # [num_points, 2]
+        
+        # Process weights
+        hidden_weights = torch.tensor(item['hidden_weights'], dtype=torch.float32).view(-1)  # [hidden_weights_size]
+        output_weights = torch.tensor(item['output_weights'], dtype=torch.float32).view(-1)  # [output_weights_size]
+        weights = torch.cat((hidden_weights, output_weights), dim=0)  # [weight_matrix_size]
+        
+        return combined, weights
+
+def main():
+    # Configuration
+    json_path = '1data_optimized.json.gz'  # Change to '1data.json' if not compressed
+    compressed_json = True  # Set to False if using uncompressed JSON
+    batch_size = 64
+    num_epochs = 300
+    learning_rate = 0.01
+    validation_split = 0.2
+    num_workers = 4  # Adjust based on your CPU cores
     
-    # Reshape weights
-    hidden_weights = hidden_weights_flat.view(10, 1)
-    output_weights = output_weights_flat.view(1, 10)
+    # Device configuration
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
     
-    # Create a new MLP model and assign predicted weights
-    new_model = MLPClassifier()
-    new_model.hidden.weight.data = hidden_weights
-    new_model.output.weight.data = output_weights
+    # Initialize Dataset
+    dataset = CustomDataset(json_file=json_path, compressed=compressed_json)
     
-    # Evaluate the model
-    new_model.eval()
-    outputs = new_model(X_train)
-    predicted_classes = (outputs > 0.5).float()
-    accuracy = (predicted_classes == y_train).float().mean().item()
-    print(f"Accuracy of the outputted model: {accuracy * 100:.2f}%")
+    # Split into training and validation sets
+    train_size = int((1 - validation_split) * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+    
+    # Create DataLoaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    
+    # Initialize models
+    sample_item = dataset[0]
+    weight_matrix_size = sample_item[1].shape[0]
+    encoder = Encoder().to(device)
+    decoder = Decoder(weight_matrix_size=weight_matrix_size).to(device)
+    
+    # Define loss function and optimizer
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(list(encoder.parameters()) + list(decoder.parameters()), lr=learning_rate)
+    
+    # Directory for checkpoints
+    checkpoint_dir = 'checkpoints'
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    # Training Loop with Validation and Checkpointing
+    for epoch in range(1, num_epochs + 1):
+        encoder.train()
+        decoder.train()
+        train_loss = 0.0
+        
+        # Training Phase
+        for batch_X, batch_y in tqdm(train_loader, desc=f"Epoch {epoch}/{num_epochs} - Training", leave=False):
+            batch_X = batch_X.to(device)  # [batch_size, num_points, 2]
+            batch_y = batch_y.to(device)  # [batch_size, weight_matrix_size]
+            
+            # Forward pass
+            encoded = encoder(batch_X)  # [batch_size, 32]
+            decoded = decoder(encoded)  # [batch_size, weight_matrix_size]
+            
+            # Compute loss
+            loss = criterion(decoded, batch_y)
+            
+            # Backward pass and optimization
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            # Accumulate loss
+            train_loss += loss.item() * batch_X.size(0)
+        
+        # Calculate average training loss
+        avg_train_loss = train_loss / train_size
+        
+        # Validation Phase
+        encoder.eval()
+        decoder.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for batch_X, batch_y in tqdm(val_loader, desc=f"Epoch {epoch}/{num_epochs} - Validation", leave=False):
+                batch_X = batch_X.to(device)
+                batch_y = batch_y.to(device)
+                
+                # Forward pass
+                encoded = encoder(batch_X)
+                decoded = decoder(encoded)
+                
+                # Compute loss
+                loss = criterion(decoded, batch_y)
+                
+                # Accumulate loss
+                val_loss += loss.item() * batch_X.size(0)
+        
+        # Calculate average validation loss
+        avg_val_loss = val_loss / val_size
+        
+        # Print epoch summary
+        if epoch % 10 == 0 or epoch == 1:
+            print(f"Epoch [{epoch}/{num_epochs}], Training Loss: {avg_train_loss:.4f}, Validation Loss: {avg_val_loss:.4f}")
+        
+        # Save checkpoints every 50 epochs and the final epoch
+        if epoch % 50 == 0 or epoch == num_epochs:
+            checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch}.pth')
+            torch.save({
+                'epoch': epoch,
+                'encoder_state_dict': encoder.state_dict(),
+                'decoder_state_dict': decoder.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'train_loss': avg_train_loss,
+                'val_loss': avg_val_loss,
+            }, checkpoint_path)
+            print(f"Checkpoint saved at epoch {epoch}")
+    
+    # Save the final trained models
+    torch.save(encoder.state_dict(), 'encoder_final.pth')
+    torch.save(decoder.state_dict(), 'decoder_final.pth')
+    print("Training completed and final models saved.")
+
+if __name__ == "__main__":
+    main()
