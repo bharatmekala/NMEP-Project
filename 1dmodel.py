@@ -7,33 +7,43 @@ import gzip
 from tqdm import tqdm
 import os
 
+class MLPClassifier(nn.Module):
+    def __init__(self):
+        super(MLPClassifier, self).__init__()
+        self.hidden = nn.Linear(1, 10)
+        self.output = nn.Linear(10, 1)
+        self.sigmoid = nn.Sigmoid()
+    def forward(self, x):
+        x = torch.relu(self.hidden(x))
+        x = self.sigmoid(self.output(x))
+        return x
+
 # Define the Encoder and Decoder classes
 class Encoder(nn.Module):
-    def __init__(self):
+    def __init__(self, task_vector_size=50):
         super(Encoder, self).__init__()
-        self.fc1 = nn.Linear(2, 256)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(256, 32)
-    
-    def forward(self, x):
-        # x: [batch_size, num_points, 2]
-        out = self.relu(self.fc1(x))  # [batch_size, num_points, 64]
-        out = self.relu(self.fc2(out))  # [batch_size, num_points, 32]
-        # Aggregate over num_points, e.g., by mean
-        out = out.mean(dim=1)  # [batch_size, 32]
-        return out
+        self.lstm = nn.LSTM(input_size=2, hidden_size=64, batch_first=True)  # Reduced hidden_size
+        self.fc = nn.Linear(64, task_vector_size)
+        self.dropout = nn.Dropout(p=0.5)  # Added Dropout
 
-class Decoder(nn.Module):
-    def __init__(self, weight_matrix_size):
-        super(Decoder, self).__init__()
-        self.fc1 = nn.Linear(32, 256)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(256, weight_matrix_size)
-    
     def forward(self, x):
-        # x: [batch_size, 32]
-        out = self.relu(self.fc1(x))  # [batch_size, 64]
-        out = self.fc2(out)  # [batch_size, weight_matrix_size]
+        _, (hidden, _) = self.lstm(x)
+        task_vector = self.fc(hidden[-1])
+        task_vector = self.dropout(task_vector)
+        return task_vector
+# Define the decoder model
+class Decoder(nn.Module):
+    def __init__(self, task_vector_size=50, weight_matrix_size=20):
+        super(Decoder, self).__init__()
+        self.decoder = nn.Sequential(
+            nn.Linear(task_vector_size, 64),  # Reduced layer size
+            nn.ReLU(),
+            nn.Dropout(p=0.5),  # Added Dropout
+            nn.Linear(64, weight_matrix_size)
+        )
+
+    def forward(self, task_vector):
+        out = self.decoder(task_vector)
         return out
 
 # Custom Dataset Class
@@ -69,13 +79,58 @@ class CustomDataset(Dataset):
         
         return combined, weights
 
+def calculate_accuracy(encoder, decoder, data_loader, device):
+    encoder.eval()
+    decoder.eval()
+    total_accuracy = 0
+    total_samples = 0
+    
+    with torch.no_grad():
+        for batch_X, batch_y in data_loader:
+            batch_X = batch_X.to(device)
+            batch_y = batch_y.to(device)
+            
+            # Forward pass through encoder and decoder
+            task_vector = encoder(batch_X)
+            predicted_weights = decoder(task_vector)
+            
+            # Split predicted weights into hidden and output weights
+            hidden_weights_size = 10 * 1  # hidden layer weights: [10, 1]
+            output_weights_size = 1 * 10  # output layer weights: [1, 10]
+            
+            hidden_weights_flat = predicted_weights[:, :hidden_weights_size]
+            output_weights_flat = predicted_weights[:, hidden_weights_size: hidden_weights_size + output_weights_size]
+            
+            # Reshape weights
+            hidden_weights = hidden_weights_flat.view(-1, 10, 1)
+            output_weights = output_weights_flat.view(-1, 1, 10)
+            
+            # Create a new MLP model and assign predicted weights
+            new_model = MLPClassifier().to(device)
+            new_model.hidden.weight.data = hidden_weights[0]  # Assuming batch size of 1
+            new_model.output.weight.data = output_weights[0]  # Assuming batch size of 1
+            
+            # Evaluate the model
+            new_model.eval()
+            X_train = batch_X[:, :, 0].view(-1, 1)  # Use only the X_train part and reshape
+            y_train = batch_X[:, :, 1].view(-1, 1)  # Use only the y_train part and reshape
+            outputs = new_model(X_train)
+            predicted_classes = (outputs > 0.5).float()
+            accuracy = (predicted_classes == y_train).float().mean().item()
+            
+            total_accuracy += accuracy * batch_X.size(0)
+            total_samples += batch_X.size(0)
+    
+    overall_accuracy = total_accuracy / total_samples
+    return overall_accuracy * 100
+
 def main():
     # Configuration
     json_path = '1data_optimized.json.gz'  # Change to '1data.json' if not compressed
     compressed_json = True  # Set to False if using uncompressed JSON
-    batch_size = 500
-    num_epochs = 300
-    learning_rate = 0.001
+    batch_size = 1000
+    num_epochs = 1000
+    learning_rate = 0.02
     validation_split = 0.2
     num_workers = 4  # Adjust based on your CPU cores
     
@@ -103,8 +158,11 @@ def main():
     
     # Define loss function and optimizer
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(list(encoder.parameters()) + list(decoder.parameters()), lr=learning_rate)
-    
+    optimizer = optim.Adam(
+        list(encoder.parameters()) + list(decoder.parameters()), 
+        lr=learning_rate, 
+        weight_decay=1e-4  # Added weight decay
+    )    
     # Directory for checkpoints
     checkpoint_dir = 'checkpoints'
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -159,10 +217,12 @@ def main():
         
         # Calculate average validation loss
         avg_val_loss = val_loss / val_size
+        val_accuracy = calculate_accuracy(encoder, decoder, val_loader, device)
+
         
         # Print epoch summary
         if epoch % 10 == 0 or epoch == 1:
-            print(f"Epoch [{epoch}/{num_epochs}], Training Loss: {avg_train_loss:.4f}, Validation Loss: {avg_val_loss:.4f}")
+            print(f"Epoch [{epoch}/{num_epochs}], Training Loss: {avg_train_loss:.4f}, Validation Loss: {avg_val_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%")        
         
         # Save checkpoints every 50 epochs and the final epoch
         if epoch % 50 == 0 or epoch == num_epochs:

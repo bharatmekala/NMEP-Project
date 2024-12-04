@@ -52,7 +52,7 @@ def train_and_get_weights(boundary):
 
 # Generate 1000 random boundaries and save the results
 results = []
-boundaries = 10000
+boundaries = 1000
 for _ in tqdm(range(boundaries), desc="Processing Boundaries"):
     boundary = random.uniform(-20, 20)
     boundary, X_train, y_train, hidden_weights, output_weights = train_and_get_weights(boundary)
@@ -78,7 +78,7 @@ for _ in tqdm(range(boundaries), desc="Processing Boundaries"):
     })
 
 
-with gzip.open('1data_optimized.json.gz', 'wt', encoding='utf-8') as f:
+with gzip.open('1data_optimized1000.json.gz', 'wt', encoding='utf-8') as f:
     json.dump(results, f, indent=4)
 
 print("Results saved to 1data_optimized.json.gz")
