@@ -11,9 +11,9 @@ import os
 class Encoder(nn.Module):
     def __init__(self):
         super(Encoder, self).__init__()
-        self.fc1 = nn.Linear(2, 64)
+        self.fc1 = nn.Linear(2, 256)
         self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(64, 32)
+        self.fc2 = nn.Linear(256, 32)
     
     def forward(self, x):
         # x: [batch_size, num_points, 2]
@@ -26,9 +26,9 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, weight_matrix_size):
         super(Decoder, self).__init__()
-        self.fc1 = nn.Linear(32, 64)
+        self.fc1 = nn.Linear(32, 256)
         self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(64, weight_matrix_size)
+        self.fc2 = nn.Linear(256, weight_matrix_size)
     
     def forward(self, x):
         # x: [batch_size, 32]
@@ -73,9 +73,9 @@ def main():
     # Configuration
     json_path = '1data_optimized.json.gz'  # Change to '1data.json' if not compressed
     compressed_json = True  # Set to False if using uncompressed JSON
-    batch_size = 64
+    batch_size = 500
     num_epochs = 300
-    learning_rate = 0.01
+    learning_rate = 0.001
     validation_split = 0.2
     num_workers = 4  # Adjust based on your CPU cores
     

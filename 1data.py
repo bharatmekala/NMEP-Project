@@ -52,7 +52,7 @@ def train_and_get_weights(boundary):
 
 # Generate 1000 random boundaries and save the results
 results = []
-boundaries = 10
+boundaries = 10000
 for _ in tqdm(range(boundaries), desc="Processing Boundaries"):
     boundary = random.uniform(-20, 20)
     boundary, X_train, y_train, hidden_weights, output_weights = train_and_get_weights(boundary)
