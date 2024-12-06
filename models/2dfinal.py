@@ -1,3 +1,64 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import matplotlib.pyplot as plt
+
+# Set device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Set seed for reproducibility
+torch.manual_seed(0)
+
+# Function to generate fake data
+def generate_data(slope, intercept, num_samples=1000):
+    X = torch.randint(-100, 100, (num_samples, 2), dtype=torch.float32).to(device)
+    y = (X[:, 1] > slope * X[:, 0] + intercept).float().to(device)
+    return X, y
+
+# Generate fake data
+true_slope = 10.0
+true_intercept = -5.0
+X, y = generate_data(true_slope, true_intercept)
+
+# Define the model
+class LinearSeparator(nn.Module):
+    def __init__(self):
+        super(LinearSeparator, self).__init__()
+        self.fc = nn.Linear(2, 1)
+    
+    def forward(self, x):
+        return self.fc(x)
+
+model = LinearSeparator().to(device)
+
+# Define loss and optimizer
+criterion = nn.BCEWithLogitsLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.01)
+
+# Training loop
+epochs = 10000
+for epoch in range(epochs):
+    model.train()
+    optimizer.zero_grad()
+    outputs = model(X).squeeze()
+    loss = criterion(outputs, y)
+    loss.backward()
+    optimizer.step()
+    
+    if (epoch+1) % 100 == 0:
+        print(f'Epoch [{epoch+1}/{epochs}], Loss: {loss.item():.4f}')
+
+# Get predicted slope and intercept
+with torch.no_grad():
+    weights = model.fc.weight[0]
+    bias = model.fc.bias[0]
+    predicted_slope = -weights[0].item() / weights[1].item()
+    predicted_intercept = -bias.item() / weights[1].item()
+
+# Print both true and predicted values
+print(f"True slope: {true_slope}, True intercept: {true_intercept}")
+print(f"Predicted slope: {predicted_slope:.2f}, Predicted intercept: {predicted_intercept:.2f}")
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -67,16 +128,16 @@ def train_meta_model(num_epochs=1000, num_samples=100, batch_size=32):
 
     return meta_model
 
-def evaluate_meta_model(meta_model, slope, intercept, num_test_samples=1000):
+def evaluate_meta_model(meta_model, predicted_slope, predicted_intercept, real_slope, real_intercept,num_test_samples=1000):
     meta_model.eval()
     with torch.no_grad():
         # Generate test data
         X_test = np.random.uniform(-100, 100, (num_test_samples, 2))
-        y_test = (X_test[:, 1] <= slope * X_test[:, 0] + intercept).astype(np.float32)
+        y_test = (X_test[:, 1] <= real_slope * X_test[:, 0] + real_intercept).astype(np.float32)
 
         # Convert to tensor and move to device
         X_tensor = torch.from_numpy(X_test.astype(np.float32)).to(device)
-        boundaries = np.array([[slope, intercept]] * num_test_samples, dtype=np.float32)
+        boundaries = np.array([[predicted_slope, predicted_intercept]] * num_test_samples, dtype=np.float32)
         boundaries_tensor = torch.from_numpy(boundaries).to(device)
 
         # Get weights and bias from MetaModel
@@ -97,12 +158,10 @@ def evaluate_meta_model(meta_model, slope, intercept, num_test_samples=1000):
         accuracy = correct / num_test_samples
 
         # Print accuracy
-        print(f'Accuracy for boundary (slope={slope}, intercept={intercept}): {accuracy * 100:.2f}%')
+        print(f'Accuracy for boundary (slope={real_slope}, intercept={real_intercept}): {accuracy * 100:.2f}%')
 
 # Example usage
 if __name__ == "__main__":
     meta_model = train_meta_model()
     # Test the meta model with a specific boundary
-    test_slope = 2
-    test_intercept = -1.4363489579318
-    evaluate_meta_model(meta_model, test_slope, test_intercept)
+    evaluate_meta_model(meta_model, predicted_slope, predicted_intercept, true_slope, true_intercept)
