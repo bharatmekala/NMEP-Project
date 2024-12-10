@@ -73,6 +73,7 @@ class TaskDataset(Dataset):
     def __init__(self, task, num_samples=1000):
         self.task = task
         self.num_samples = num_samples
+        self.offset = torch.randint(0, 5, (1,)).item()  # Generate a random offset
         self.data, self.labels = self.generate_data(task, num_samples)
     
     def generate_data(self, task, num):
@@ -83,12 +84,12 @@ class TaskDataset(Dataset):
             a = torch.randint(0, 10, (num, 1)).float()
             b = torch.randint(0, 10, (num, 1)).float()
             x = torch.cat([a, b], dim=1)
-            y = a + b
+            y = a + b + self.offset  # Add offset to y
         elif task == "subtract_numbers":
             a = torch.randint(0, 10, (num, 1)).float()
             b = torch.randint(0, 10, (num, 1)).float()
             x = torch.cat([a, b], dim=1)
-            y = a - b
+            y = a - b + self.offset  # Add offset to y
         elif task == "multiclass_boundary":
             x = torch.randn(num, 2)
             y = torch.zeros(num, 1)

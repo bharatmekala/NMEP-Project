@@ -9,8 +9,8 @@ device = torch.device("cuda:5" if torch.cuda.is_available() else "cpu")
 # Define Tasks
 tasks = {
     "classify_boundary": {"input_dim": 2, "output_dim": 1},
-    "add_numbers": {"input_dim": 2, "output_dim": 1},
-    "subtract_numbers": {"input_dim": 2, "output_dim": 1}
+    #"add_numbers": {"input_dim": 2, "output_dim": 1}
+     "subtract_numbers": {"input_dim": 2, "output_dim": 1}
     # "multiclass_boundary": {"input_dim": 2, "output_dim": 1}
 }
 
@@ -19,6 +19,7 @@ class TaskDataset(Dataset):
     def __init__(self, task, num_samples=1000):
         self.task = task
         self.num_samples = num_samples
+        self.offset = torch.randint(0, 5, (1,)).item()  # Generate a random offset
         self.data, self.labels = self.generate_data(task, num_samples)
     
     def generate_data(self, task, num):
@@ -29,12 +30,12 @@ class TaskDataset(Dataset):
             a = torch.randint(0, 10, (num, 1)).float()
             b = torch.randint(0, 10, (num, 1)).float()
             x = torch.cat([a, b], dim=1)
-            y = a + b
+            y = a + b + self.offset  # Add offset to y
         elif task == "subtract_numbers":
             a = torch.randint(0, 10, (num, 1)).float()
             b = torch.randint(0, 10, (num, 1)).float()
             x = torch.cat([a, b], dim=1)
-            y = a - b
+            y = a - b + self.offset  # Add offset to y
         elif task == "multiclass_boundary":
             x = torch.randn(num, 2)
             y = torch.zeros(num, 1)
@@ -47,7 +48,7 @@ class TaskDataset(Dataset):
     
     def __getitem__(self, idx):
         return self.data[idx], self.labels[idx]
-
+    
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -58,19 +59,28 @@ encoder = Encoder(input_dim=3, latent_dim=10).to(device)
 encoder.load_state_dict(torch.load('encoder_weights.pth'))
 encoder.eval()  # Set encoder to evaluation mode
 
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
 # Define the MetaModel that generates weight matrices
 class MetaModel(nn.Module):
     def __init__(self, latent_dim, mlp_input_dim, mlp_hidden_dim, mlp_output_dim):
         super(MetaModel, self).__init__()
         total_weights = (mlp_input_dim * mlp_hidden_dim) + (mlp_hidden_dim * mlp_output_dim)
-        hidden_size = 512  # Increased hidden size for the MetaModel
+        hidden_size = 1024  # Increased hidden size for the MetaModel
 
-        # Adding more layers to the MetaModel
+        # Adding more layers and dropout to the MetaModel
         self.fc = nn.Sequential(
             nn.Linear(latent_dim + 1, hidden_size),
             nn.ReLU(),
+            nn.Dropout(0.5),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(0.5),
             nn.Linear(hidden_size, total_weights)
         )
 
@@ -93,12 +103,13 @@ mlp_hidden_dim = 128  # Increased hidden dimension
 mlp_output_dim = 1  # Output dimension is 1 for all tasks
 
 # Initialize the MetaModel
+latent_dim = 10  # Assuming latent_dim is defined elsewhere
 meta_model = MetaModel(latent_dim, mlp_input_dim, mlp_hidden_dim, mlp_output_dim).to(device)
 optimizer = optim.Adam(meta_model.parameters(), lr=1e-3)
 
 # Training loop
-epochs = 1000
-batch_size = 64
+epochs = 10000
+batch_size = 128
 
 # Testing phase
 def printloss():
@@ -115,9 +126,11 @@ def printloss():
             
                 with torch.no_grad():
                     z = encoder(xy)  # Feed concatenated input into the encoder
-                    # Append 1 for regression tasks, 0 for classification tasks
-                    if task_name in ["add_numbers", "subtract_numbers"]:  # Assuming these are regression tasks
+                    # Set task indicator
+                    if task_name == "add_numbers":
                         task_indicator = torch.ones(z.size(0), 1).to(z.device)
+                    elif task_name == "subtract_numbers":
+                        task_indicator = torch.full((z.size(0), 1), 2).to(z.device)
                     else:
                         task_indicator = torch.zeros(z.size(0), 1).to(z.device)
                     z = torch.cat((z, task_indicator), dim=1)
@@ -142,7 +155,7 @@ def printloss():
 for epoch in range(epochs):
     print(f"Epoch {epoch+1}/{epochs}")
     for task_name, task_info in tasks.items():
-        dataset = TaskDataset(task_name, num_samples=1000)
+        dataset = TaskDataset(task_name, num_samples=2000)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         for x, y in loader:
             x, y = x.to(device), y.to(device)
@@ -150,9 +163,11 @@ for epoch in range(epochs):
             
             with torch.no_grad():
                 z = encoder(xy)  # Feed concatenated input into the encoder
-                    # Append 1 for regression tasks, 0 for classification tasks
-                if task_name in ["add_numbers", "subtract_numbers"]:  # Assuming these are regression tasks
+                # Set task indicator
+                if task_name == "add_numbers":
                     task_indicator = torch.ones(z.size(0), 1).to(z.device)
+                elif task_name == "subtract_numbers":
+                    task_indicator = torch.full((z.size(0), 1), 2).to(z.device)
                 else:
                     task_indicator = torch.zeros(z.size(0), 1).to(z.device)
                 z = torch.cat((z, task_indicator), dim=1)
