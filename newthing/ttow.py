@@ -11,7 +11,7 @@ tasks = {
     "classify_boundary": {"input_dim": 2, "output_dim": 1},
     "add_numbers": {"input_dim": 2, "output_dim": 1},
     "subtract_numbers": {"input_dim": 2, "output_dim": 1}
-    #"multiclass_boundary": {"input_dim": 2, "output_dim": 2}
+    # "multiclass_boundary": {"input_dim": 2, "output_dim": 1}
 }
 
 # Dummy Dataset
@@ -37,9 +37,9 @@ class TaskDataset(Dataset):
             y = a - b
         elif task == "multiclass_boundary":
             x = torch.randn(num, 2)
-            y = torch.zeros(num, 2)
+            y = torch.zeros(num, 1)
             y[(x[:, 0] + x[:, 1] > 0), 0] = 1
-            y[(x[:, 0] - x[:, 1] > 0), 1] = 1
+            y[(x[:, 0] - x[:, 1] > 0), 0] += 1
         return x, y
     
     def __len__(self):
@@ -52,13 +52,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from dtod import Encoder
-
-
-
-original_input_dim = 2  # For example
-output_dim = 1
-encoder_input_dim = original_input_dim + output_dim
+from dtod2 import Encoder
 latent_dim = 10
 encoder = Encoder(input_dim=3, latent_dim=10).to(device)
 encoder.load_state_dict(torch.load('encoder_weights.pth'))
@@ -73,7 +67,7 @@ class MetaModel(nn.Module):
 
         # Adding more layers to the MetaModel
         self.fc = nn.Sequential(
-            nn.Linear(latent_dim, hidden_size),
+            nn.Linear(latent_dim + 1, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
@@ -95,7 +89,7 @@ class MetaModel(nn.Module):
 
 # Parameters for the MLP
 mlp_input_dim = 2
-mlp_hidden_dim = 256  # Increased hidden dimension
+mlp_hidden_dim = 128  # Increased hidden dimension
 mlp_output_dim = 1  # Output dimension is 1 for all tasks
 
 # Initialize the MetaModel
@@ -103,7 +97,7 @@ meta_model = MetaModel(latent_dim, mlp_input_dim, mlp_hidden_dim, mlp_output_dim
 optimizer = optim.Adam(meta_model.parameters(), lr=1e-3)
 
 # Training loop
-epochs = 300
+epochs = 1000
 batch_size = 64
 
 # Testing phase
@@ -121,6 +115,13 @@ def printloss():
             
                 with torch.no_grad():
                     z = encoder(xy)  # Feed concatenated input into the encoder
+                    # Append 1 for regression tasks, 0 for classification tasks
+                    if task_name in ["add_numbers", "subtract_numbers"]:  # Assuming these are regression tasks
+                        task_indicator = torch.ones(z.size(0), 1).to(z.device)
+                    else:
+                        task_indicator = torch.zeros(z.size(0), 1).to(z.device)
+                    z = torch.cat((z, task_indicator), dim=1)
+                
                 W1, W2 = meta_model(z)
                 x_expanded = x.unsqueeze(1)
                 h = torch.bmm(x_expanded, W1.transpose(1, 2)).squeeze(1)
@@ -149,6 +150,12 @@ for epoch in range(epochs):
             
             with torch.no_grad():
                 z = encoder(xy)  # Feed concatenated input into the encoder
+                    # Append 1 for regression tasks, 0 for classification tasks
+                if task_name in ["add_numbers", "subtract_numbers"]:  # Assuming these are regression tasks
+                    task_indicator = torch.ones(z.size(0), 1).to(z.device)
+                else:
+                    task_indicator = torch.zeros(z.size(0), 1).to(z.device)
+                z = torch.cat((z, task_indicator), dim=1)
             
             W1, W2 = meta_model(z)  # Generate weight matrices
 
@@ -166,6 +173,6 @@ for epoch in range(epochs):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            if epoch % 10 == 0:
+            if epoch % 100 == 0:
                 printloss()
 

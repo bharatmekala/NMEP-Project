@@ -10,10 +10,13 @@ device = torch.device("cuda:5" if torch.cuda.is_available() else "cpu")
 # Define Encoder
 class Encoder(nn.Module):
     def __init__(self, input_dim, latent_dim):
-        print(input_dim, latent_dim)
         super(Encoder, self).__init__()
         self.fc = nn.Sequential(
-            nn.Linear(input_dim, 128),
+            nn.Linear(input_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
             nn.ReLU(),
             nn.Linear(128, latent_dim)
         )
@@ -29,7 +32,11 @@ class Decoder(nn.Module):
         self.fc = nn.Sequential(
             nn.Linear(latent_dim, 128),
             nn.ReLU(),
-            nn.Linear(128, output_dim)
+            nn.Linear(128, 256),
+            nn.ReLU(),
+            nn.Linear(256, 512),
+            nn.ReLU(),
+            nn.Linear(512, output_dim)
         )
     
     def forward(self, z):
@@ -37,24 +44,28 @@ class Decoder(nn.Module):
 
 # AE with multiple decoders
 class Autoencoder(nn.Module):
-    def __init__(self, input_dim, latent_dim, output_dims):
+    def __init__(self, input_dim, latent_dim, output_dim):
         super(Autoencoder, self).__init__()
         self.encoder = Encoder(input_dim, latent_dim)
-        self.decoders = nn.ModuleDict({
-            task: Decoder(latent_dim, output_dim) for task, output_dim in output_dims.items()
-        })
+        self.decoder = Decoder(latent_dim + 1, output_dim)
     
     def forward(self, x, task):
         z = self.encoder(x)
-        out = self.decoders[task](z)
+        # Append 1 for regression tasks, 0 for classification tasks
+        if task in ["add_numbers", "subtract_numbers"]:  # Assuming these are regression tasks
+            task_indicator = torch.ones(z.size(0), 1).to(z.device)
+        else:
+            task_indicator = torch.zeros(z.size(0), 1).to(z.device)
+        z = torch.cat((z, task_indicator), dim=1)
+        out = self.decoder(z)
         return out
 
 # Define Tasks
 tasks = {
-    #"classify_boundary": {"input_dim": 2, "output_dim": 1},
-    #"add_numbers": {"input_dim": 2, "output_dim": 1},
-    #"subtract_numbers": {"input_dim": 2, "output_dim": 1}
-    "multiclass_boundary": {"input_dim": 2, "output_dim": 1}
+    "classify_boundary": {"input_dim": 2, "output_dim": 1},
+    "add_numbers": {"input_dim": 2, "output_dim": 1},
+    "subtract_numbers": {"input_dim": 2, "output_dim": 1}
+    #"multiclass_boundary": {"input_dim": 2, "output_dim": 1}
 }
 
 # Dummy Dataset
@@ -93,20 +104,19 @@ class TaskDataset(Dataset):
 
 # Initialize Model
 latent_dim = 10
-output_dims = {task: info["output_dim"] for task, info in tasks.items()}
-model = Autoencoder(input_dim=3, latent_dim=latent_dim, output_dims=output_dims).to(device)
+model = Autoencoder(input_dim=3, latent_dim=latent_dim, output_dim=1).to(device)
 
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
 if __name__ == "__main__":
     # Training
     epochs = 20
-    batch_size = 128
+    batch_size = 64
     for epoch in range(epochs):
         print(f"Epoch {epoch+1}/{epochs}")
         for _ in tqdm(range(100), desc="Tasks"):
             task = random.choice(list(tasks.keys()))
-            dataset = TaskDataset(task, num_samples=10000)
+            dataset = TaskDataset(task, num_samples=1000)
             loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
             for x, y in loader:
                 x, y = x.to(device), y.to(device)
@@ -151,14 +161,3 @@ if __name__ == "__main__":
 
     # Saving the encoder's weights
     torch.save(model.encoder.state_dict(), 'encoder_weights.pth')
-
-    # Saving each decoder's weights
-    for task_name, decoder in model.decoders.items():
-        torch.save(decoder.state_dict(), f'decoder_{task_name}_weights.pth')
-
-    # Loading the encoder's weights
-    model.encoder.load_state_dict(torch.load('encoder_weights.pth'))
-
-    # Loading each decoder's weights
-    for task_name, decoder in model.decoders.items():
-        decoder.load_state_dict(torch.load(f'decoder_{task_name}_weights.pth'))
