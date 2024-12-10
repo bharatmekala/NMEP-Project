@@ -12,11 +12,15 @@ class Encoder(nn.Module):
     def __init__(self, input_dim, latent_dim):
         super(Encoder, self).__init__()
         self.fc = nn.Sequential(
-            nn.Linear(input_dim, 128),
+            nn.Linear(input_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
             nn.ReLU(),
             nn.Linear(128, latent_dim)
         )
-    
+
     def forward(self, x):
         z = self.fc(x)
         return z
@@ -34,7 +38,7 @@ class Decoder(nn.Module):
     def forward(self, z):
         return self.fc(z)
 
-# VAE with multiple decoders
+# AE with multiple decoders
 class Autoencoder(nn.Module):
     def __init__(self, input_dim, latent_dim, output_dims):
         super(Autoencoder, self).__init__()
@@ -52,8 +56,8 @@ class Autoencoder(nn.Module):
 tasks = {
     "classify_boundary": {"input_dim": 2, "output_dim": 1},
     "add_numbers": {"input_dim": 2, "output_dim": 1},
-    "subtract_numbers": {"input_dim": 2, "output_dim": 1},
-    "multiclass_boundary": {"input_dim": 2, "output_dim": 2}
+    "subtract_numbers": {"input_dim": 2, "output_dim": 1}
+    # "multiclass_boundary": {"input_dim": 2, "output_dim": 1}
 }
 
 # Dummy Dataset
@@ -79,9 +83,9 @@ class TaskDataset(Dataset):
             y = a - b
         elif task == "multiclass_boundary":
             x = torch.randn(num, 2)
-            y = torch.zeros(num, 2)
+            y = torch.zeros(num, 1)
             y[(x[:, 0] + x[:, 1] > 0), 0] = 1
-            y[(x[:, 0] - x[:, 1] > 0), 1] = 1
+            y[(x[:, 0] - x[:, 1] > 0), 0] += 1
         return x, y
     
     def __len__(self):
@@ -93,55 +97,67 @@ class TaskDataset(Dataset):
 # Initialize Model
 latent_dim = 10
 output_dims = {task: info["output_dim"] for task, info in tasks.items()}
-model = Autoencoder(input_dim=2, latent_dim=latent_dim, output_dims=output_dims).to(device)
+model = Autoencoder(input_dim=3, latent_dim=latent_dim, output_dims=output_dims).to(device)
 
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
+if __name__ == "__main__":
+    # Training
+    epochs = 10
+    batch_size = 64
+    for epoch in range(epochs):
+        print(f"Epoch {epoch+1}/{epochs}")
+        for _ in tqdm(range(100), desc="Tasks"):
+            task = random.choice(list(tasks.keys()))
+            dataset = TaskDataset(task, num_samples=1000)
+            loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+            for x, y in loader:
+                x, y = x.to(device), y.to(device)
+                xy = torch.cat((x, y), dim=1)
+                optimizer.zero_grad()
+                out = model(xy, task)
+                if task in ["classify_boundary", "multiclass_boundary"]:
+                    loss_fn = nn.BCEWithLogitsLoss()
+                    loss = loss_fn(out, y)
+                else:
+                    loss_fn = nn.MSELoss()
+                    loss = loss_fn(out, y)
+                loss.backward()
+                optimizer.step()
 
-# Training
-epochs = 100
-batch_size = 64
-for epoch in range(epochs):
-    print(f"Epoch {epoch+1}/{epochs}")
-    for _ in tqdm(range(100), desc="Tasks"):
-        task = random.choice(list(tasks.keys()))
-        dataset = TaskDataset(task, num_samples=1000)
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-        for x, y in loader:
-            x, y = x.to(device), y.to(device)
-            optimizer.zero_grad()
-            out = model(x, task)
-            if task in ["classify_boundary", "multiclass_boundary"]:
-                loss_fn = nn.BCEWithLogitsLoss()
-                loss = loss_fn(out, y)
-            else:
-                loss_fn = nn.MSELoss()
-                loss = loss_fn(out, y)
-            loss.backward()
-            optimizer.step()
+    # Testing
+    model.eval()
+    with torch.no_grad():
+        for task in tasks.keys():
+            dataset = TaskDataset(task, num_samples=200)
+            loader = DataLoader(dataset, batch_size=batch_size)
+            correct = 0
+            total = 0
+            for x, y in loader:
+                x, y = x.to(device), y.to(device)
+                xy = torch.cat((x, y), dim=1)
+                out = model(xy, task)
+                if task == "classify_boundary" or "multiclass_boundary":
+                    preds = (torch.sigmoid(out) > 0.5).float()
+                    correct += (preds == y).sum().item()
+                    total += y.size(0)
+                else:
+                    preds = out
+                    correct += ((preds - y).abs() < 0.5).float().sum().item()
+                    total += y.size(0)
+            accuracy = correct / total
+            print(f"Task: {task}, Accuracy: {accuracy:.2f}")
 
-# Testing
-model.eval()
-with torch.no_grad():
-    for task in tasks.keys():
-        dataset = TaskDataset(task, num_samples=200)
-        loader = DataLoader(dataset, batch_size=batch_size)
-        correct = 0
-        total = 0
-        for x, y in loader:
-            x, y = x.to(device), y.to(device)
-            out = model(x, task)
-            if task == "classify_boundary":
-                preds = (torch.sigmoid(out) > 0.5).float()
-                correct += (preds == y).sum().item()
-                total += y.size(0)
-            elif task == "multiclass_boundary":
-                preds = torch.sigmoid(out) > 0.5
-                correct += ((preds.float() == y).all(dim=1)).sum().item()
-                total += y.size(0)
-            else:
-                preds = out
-                correct += ((preds - y).abs() < 0.5).float().sum().item()
-                total += y.size(0)
-        accuracy = correct / total
-        print(f"Task: {task}, Accuracy: {accuracy:.2f}")
+    # Saving the encoder's weights
+    torch.save(model.encoder.state_dict(), 'encoder_weights.pth')
+
+    # Saving each decoder's weights
+    for task_name, decoder in model.decoders.items():
+        torch.save(decoder.state_dict(), f'decoder_{task_name}_weights.pth')
+
+    # Loading the encoder's weights
+    model.encoder.load_state_dict(torch.load('encoder_weights.pth'))
+
+    # Loading each decoder's weights
+    for task_name, decoder in model.decoders.items():
+        decoder.load_state_dict(torch.load(f'decoder_{task_name}_weights.pth'))
