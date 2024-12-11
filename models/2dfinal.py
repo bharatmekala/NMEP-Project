@@ -36,17 +36,27 @@ criterion = nn.BCEWithLogitsLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.01)
 
 # Training loop
-epochs = 10000
+epochs = 100
+loss_list = []
 for epoch in range(epochs):
     model.train()
     optimizer.zero_grad()
     outputs = model(X).squeeze()
     loss = criterion(outputs, y)
+    loss_list.append(loss.item())
     loss.backward()
     optimizer.step()
     
     if (epoch+1) % 100 == 0:
         print(f'Epoch [{epoch+1}/{epochs}], Loss: {loss.item():.4f}')
+
+plt.figure(figsize=(5, 4.5))
+plt.plot(loss_list)
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.title('First Phase Training Loss')
+plt.savefig('first_phase_loss.png')
+plt.close()
 
 # Get predicted slope and intercept
 with torch.no_grad():
@@ -83,11 +93,14 @@ class MetaModel(nn.Module):
         b = out[:, 2].unsqueeze(1)
         return W1, W2, b
 
-def train_meta_model(num_epochs=1000, num_samples=100, batch_size=32):
+
+
+def train_meta_model(num_epochs=150, num_samples=100, batch_size=32):
     meta_model = MetaModel().to(device)
     optimizer = optim.Adam(meta_model.parameters(), lr=0.001)
     criterion = nn.BCELoss()
-
+    loss_list = []
+    
     for epoch in range(num_epochs):
         # Sample boundaries (slope and intercept)
         slopes = np.random.uniform(-5, 5, batch_size)
@@ -116,6 +129,7 @@ def train_meta_model(num_epochs=1000, num_samples=100, batch_size=32):
 
         # Compute loss
         loss = criterion(outputs, y_tensor)
+        loss_list.append(loss.item())
 
         # Backpropagation
         optimizer.zero_grad()
@@ -126,7 +140,7 @@ def train_meta_model(num_epochs=1000, num_samples=100, batch_size=32):
         if (epoch + 1) % 100 == 0 or epoch == 0:
             print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item():.4f}')
 
-    return meta_model
+    return meta_model, loss_list
 
 def evaluate_meta_model(meta_model, predicted_slope, predicted_intercept, real_slope, real_intercept,num_test_samples=1000):
     meta_model.eval()
@@ -162,6 +176,13 @@ def evaluate_meta_model(meta_model, predicted_slope, predicted_intercept, real_s
 
 # Example usage
 if __name__ == "__main__":
-    meta_model = train_meta_model()
+    meta_model, loss_list = train_meta_model()
+    plt.figure(figsize=(5, 4.5))
+    plt.plot(loss_list)
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Second Phase Training Loss')
+    plt.savefig('second_phase_loss.png')
+    plt.close()
     # Test the meta model with a specific boundary
     evaluate_meta_model(meta_model, predicted_slope, predicted_intercept, true_slope, true_intercept)

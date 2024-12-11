@@ -9,9 +9,8 @@ device = torch.device("cuda:5" if torch.cuda.is_available() else "cpu")
 # Define Tasks
 tasks = {
     "classify_boundary": {"input_dim": 2, "output_dim": 1},
-    #"add_numbers": {"input_dim": 2, "output_dim": 1}
-     "subtract_numbers": {"input_dim": 2, "output_dim": 1}
-    # "multiclass_boundary": {"input_dim": 2, "output_dim": 1}
+    "add_numbers": {"input_dim": 2, "output_dim": 1},
+    "subtract_numbers": {"input_dim": 2, "output_dim": 1}
 }
 
 # Dummy Dataset
@@ -111,19 +110,57 @@ optimizer = optim.Adam(meta_model.parameters(), lr=1e-3)
 epochs = 10000
 batch_size = 128
 
-# Testing phase
-def printloss():
-    meta_model.eval()
-    with torch.no_grad():
+if __name__ == "__main__":
+    # Testing phase
+    def printloss():
+        meta_model.eval()
+        with torch.no_grad():
+            for task_name, task_info in tasks.items():
+                dataset = TaskDataset(task_name, num_samples=1000)
+                loader = DataLoader(dataset, batch_size=batch_size)
+                correct = 0
+                total = 0
+                for x, y in loader:
+                    x, y = x.to(device), y.to(device)
+                    xy = torch.cat((x, y), dim=1)  # Concatenate along the feature dimension
+                
+                    with torch.no_grad():
+                        z = encoder(xy)  # Feed concatenated input into the encoder
+                        # Set task indicator
+                        if task_name == "add_numbers":
+                            task_indicator = torch.ones(z.size(0), 1).to(z.device)
+                        elif task_name == "subtract_numbers":
+                            task_indicator = torch.full((z.size(0), 1), 2).to(z.device)
+                        else:
+                            task_indicator = torch.zeros(z.size(0), 1).to(z.device)
+                        z = torch.cat((z, task_indicator), dim=1)
+                    
+                    W1, W2 = meta_model(z)
+                    x_expanded = x.unsqueeze(1)
+                    h = torch.bmm(x_expanded, W1.transpose(1, 2)).squeeze(1)
+                    h = torch.relu(h)
+                    h_expanded = h.unsqueeze(1)
+                    outputs = torch.bmm(h_expanded, W2.transpose(1, 2)).squeeze(1)
+                    if task_name == "classify_boundary":
+                        preds = (torch.sigmoid(outputs) > 0.5).float()
+                        correct += (preds == y).sum().item()
+                        total += y.size(0)
+                    else:
+                        preds = outputs
+                        correct += ((preds - y).abs() < 0.5).float().sum().item()
+                        total += y.size(0)
+                accuracy = correct / total
+                print(f"Task: {task_name}, Accuracy: {accuracy:.2f}")
+
+    for epoch in range(epochs):
+        print(f"Epoch {epoch+1}/{epochs}")
         for task_name, task_info in tasks.items():
-            dataset = TaskDataset(task_name, num_samples=200)
-            loader = DataLoader(dataset, batch_size=batch_size)
-            correct = 0
-            total = 0
+            dataset = TaskDataset(task_name, num_samples=2000)
+            loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
             for x, y in loader:
                 x, y = x.to(device), y.to(device)
                 xy = torch.cat((x, y), dim=1)  # Concatenate along the feature dimension
-            
+                
                 with torch.no_grad():
                     z = encoder(xy)  # Feed concatenated input into the encoder
                     # Set task indicator
@@ -135,59 +172,25 @@ def printloss():
                         task_indicator = torch.zeros(z.size(0), 1).to(z.device)
                     z = torch.cat((z, task_indicator), dim=1)
                 
-                W1, W2 = meta_model(z)
-                x_expanded = x.unsqueeze(1)
-                h = torch.bmm(x_expanded, W1.transpose(1, 2)).squeeze(1)
+                W1, W2 = meta_model(z)  # Generate weight matrices
+
+                # Forward pass using the generated weights
+                x_expanded = x.unsqueeze(1)  # Shape: [batch_size, 1, input_dim]
+                h = torch.bmm(x_expanded, W1.transpose(1, 2)).squeeze(1)  # Hidden layer
                 h = torch.relu(h)
-                h_expanded = h.unsqueeze(1)
-                outputs = torch.bmm(h_expanded, W2.transpose(1, 2)).squeeze(1)
-                if task_name == "classify_boundary":
-                    preds = (torch.sigmoid(outputs) > 0.5).float()
-                    correct += (preds == y).sum().item()
-                    total += y.size(0)
-                else:
-                    preds = outputs
-                    correct += ((preds - y).abs() < 0.5).float().sum().item()
-                    total += y.size(0)
-            accuracy = correct / total
-            print(f"Task: {task_name}, Accuracy: {accuracy:.2f}")
+                h_expanded = h.unsqueeze(1)  # Shape: [batch_size, 1, hidden_dim]
+                outputs = torch.bmm(h_expanded, W2.transpose(1, 2)).squeeze(1)  # Output layer
 
-for epoch in range(epochs):
-    print(f"Epoch {epoch+1}/{epochs}")
-    for task_name, task_info in tasks.items():
-        dataset = TaskDataset(task_name, num_samples=2000)
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-        for x, y in loader:
-            x, y = x.to(device), y.to(device)
-            xy = torch.cat((x, y), dim=1)  # Concatenate along the feature dimension
-            
-            with torch.no_grad():
-                z = encoder(xy)  # Feed concatenated input into the encoder
-                # Set task indicator
-                if task_name == "add_numbers":
-                    task_indicator = torch.ones(z.size(0), 1).to(z.device)
-                elif task_name == "subtract_numbers":
-                    task_indicator = torch.full((z.size(0), 1), 2).to(z.device)
-                else:
-                    task_indicator = torch.zeros(z.size(0), 1).to(z.device)
-                z = torch.cat((z, task_indicator), dim=1)
-            
-            W1, W2 = meta_model(z)  # Generate weight matrices
+                # Compute loss
+                loss_fn = nn.MSELoss()
+                loss = loss_fn(outputs, y)
 
-            # Forward pass using the generated weights
-            x_expanded = x.unsqueeze(1)  # Shape: [batch_size, 1, input_dim]
-            h = torch.bmm(x_expanded, W1.transpose(1, 2)).squeeze(1)  # Hidden layer
-            h = torch.relu(h)
-            h_expanded = h.unsqueeze(1)  # Shape: [batch_size, 1, hidden_dim]
-            outputs = torch.bmm(h_expanded, W2.transpose(1, 2)).squeeze(1)  # Output layer
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+        if epoch % 100 == 0:
+            printloss()
+            torch.save(meta_model.state_dict(), 'meta_model_weights.pth')
 
-            # Compute loss
-            loss_fn = nn.MSELoss()
-            loss = loss_fn(outputs, y)
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            if epoch % 100 == 0:
-                printloss()
 
